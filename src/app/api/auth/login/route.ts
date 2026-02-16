@@ -1,8 +1,8 @@
 import { prisma } from "@/lib/prisma";
-import { hashPassword } from "@/lib/hash";
+import { comparePassword } from "@/lib/hash";
 import { signToken } from "@/lib/jwt";
 import { sendSuccess, sendError } from "@/lib/responseHandler";
-import { signupSchema } from "@/lib/validators/auth.schema";
+import { loginSchema } from "@/lib/validators/auth.schema";
 import { handleError } from "@/lib/errorHandler";
 import { AppError } from "@/lib/AppError";
 
@@ -11,39 +11,34 @@ const AUTH_COOKIE_NAME = "jwt";
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const parsedBody = signupSchema.safeParse(body);
+    const parsedBody = loginSchema.safeParse(body);
 
     if (!parsedBody.success) {
       throw new AppError(
         parsedBody.error.issues[0]?.message || "Invalid input",
         400,
-        "VALIDATION_ERROR",
+        "VALIDATION_ERROR"
       );
     }
 
-    const { name, email, password, age } = parsedBody.data;
+    const { email, password } = parsedBody.data;
 
-    const existingUser = await prisma.user.findUnique({
+    const user = await prisma.user.findUnique({
       where: { email },
-    });
-
-    if (existingUser) {
-      return sendError("User already exists", "CONFLICT_ERROR", 409);
-    }
-
-    const hashedPassword = await hashPassword(password);
-
-    const user = await prisma.user.create({
-      data: {
-        name,
-        email,
-        password: hashedPassword,
-        age,
-      },
       include: {
         projectUsers: true,
       },
     });
+
+    if (!user || !user.password) {
+      return sendError("Invalid credentials", "AUTH_ERROR", 401);
+    }
+
+    const isMatch = await comparePassword(password, user.password);
+
+    if (!isMatch) {
+      return sendError("Invalid credentials", "AUTH_ERROR", 401);
+    }
 
     const token = await signToken({
       userId: user.id,
@@ -56,8 +51,7 @@ export async function POST(request: Request) {
       {
         user: safeUser,
       },
-      "User created successfully",
-      201,
+      "Login successful"
     );
 
     response.cookies.set(AUTH_COOKIE_NAME, token, {
@@ -72,7 +66,7 @@ export async function POST(request: Request) {
   } catch (error) {
     return handleError(
       error instanceof Error ? error : new Error("Unknown error"),
-      "POST /api/auth/signup",
+      "POST /api/auth/login"
     );
   }
 }

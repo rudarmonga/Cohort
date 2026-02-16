@@ -2,6 +2,7 @@ import "dotenv/config";
 import { PrismaClient, ProjectRole, TaskStatus } from "@prisma/client";
 import { Pool } from "pg";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { hashPassword } from "@/lib/hash";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -12,15 +13,18 @@ const adapter = new PrismaPg(pool);
 const prisma = new PrismaClient({ adapter });
 
 async function main() {
+
+  const password = await hashPassword("@password123");
   // 1️⃣ User (email is unique → upsert OK)
   const admin = await prisma.user.upsert({
     where: { email: "admin@test.com" },
     update: {},
     create: {
       name: "Admin User",
+      userName: "User1",
       age: 22,
       email: "admin@test.com",
-      password: "hashed-password",
+      password: password
     },
   });
 
@@ -29,9 +33,10 @@ async function main() {
     update: {},
     create: {
       name: "Team Member",
+      userName: "User2",
       age: 30,
       email: "member@test.com",
-      password: "hashed-password",
+      password: password,
     },
   });
 

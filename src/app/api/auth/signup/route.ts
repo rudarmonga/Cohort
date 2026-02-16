@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/hash";
 import { signToken } from "@/lib/jwt";
-import { sendSuccess, sendError } from "@/lib/responseHandler";
+import { sendSuccess } from "@/lib/responseHandler";
 import { signupSchema } from "@/lib/validators/auth.schema";
 import { handleError } from "@/lib/errorHandler";
 import { AppError } from "@/lib/AppError";
@@ -17,33 +17,52 @@ export async function POST(request: Request) {
       throw new AppError(
         parsedBody.error.issues[0]?.message || "Invalid input",
         400,
-        "VALIDATION_ERROR",
+        "VALIDATION_ERROR"
       );
     }
 
-    const { name, email, password, age } = parsedBody.data;
+    const { name, email, password, age, userName } = parsedBody.data;
 
     const existingUser = await prisma.user.findUnique({
       where: { email },
+      include: { projectUsers: true },
     });
 
-    if (existingUser) {
-      return sendError("User already exists", "CONFLICT_ERROR", 409);
+    if (existingUser && !existingUser.deletedAt) {
+      throw new AppError(
+        "Email already registered",
+        400,
+        "VALIDATION_ERROR"
+      );
     }
 
-    const hashedPassword = await hashPassword(password);
+    let user;
 
-    const user = await prisma.user.create({
-      data: {
-        name,
-        email,
-        password: hashedPassword,
-        age,
-      },
-      include: {
-        projectUsers: true,
-      },
-    });
+    if (existingUser && existingUser.deletedAt) {
+      user = await prisma.user.update({
+        where: { email },
+        data: {
+          name,
+          userName,
+          age,
+          password: await hashPassword(password),
+          deletedAt: null,
+        },
+        include: { projectUsers: true },
+      });
+    } 
+    else {
+      user = await prisma.user.create({
+        data: {
+          name,
+          email,
+          password: await hashPassword(password),
+          age,
+          userName,
+        },
+        include: { projectUsers: true },
+      });
+    }
 
     const token = await signToken({
       userId: user.id,
@@ -53,11 +72,11 @@ export async function POST(request: Request) {
     const { password: _, ...safeUser } = user;
 
     const response = sendSuccess(
-      {
-        user: safeUser,
-      },
-      "User created successfully",
-      201,
+      { user: safeUser },
+      existingUser && existingUser.deletedAt
+        ? "Account restored successfully"
+        : "User created successfully",
+      existingUser && existingUser.deletedAt ? 200 : 201
     );
 
     response.cookies.set(AUTH_COOKIE_NAME, token, {
@@ -69,10 +88,11 @@ export async function POST(request: Request) {
     });
 
     return response;
+
   } catch (error) {
     return handleError(
       error instanceof Error ? error : new Error("Unknown error"),
-      "POST /api/auth/signup",
+      "POST /api/auth/signup"
     );
   }
 }

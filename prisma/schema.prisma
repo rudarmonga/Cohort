@@ -9,11 +9,14 @@ datasource db {
 model User {
   id           Int           @id @default(autoincrement())
   name         String
-  age          Int
+  userName     String        @unique
+  age          Int?
+  profilePic   String?
   email        String        @unique
   password     String
   projectUsers ProjectUser[]
   createdAt    DateTime      @default(now())
+  deletedAt    DateTime?
 }
 
 model Project {

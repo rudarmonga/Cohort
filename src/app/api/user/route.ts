@@ -67,6 +67,9 @@ export async function PUT( request: Request) {
     const user = await prisma.user.update({
       where: { id: userId },
       data: parsedBody.data,
+      include: {
+        projectUsers: true,
+      },
     });
 
     if (!user) {
@@ -109,10 +112,10 @@ export async function DELETE(request: Request) {
     }
 
     const user = await prisma.user.findUnique({
-      where: { id: userId }
+      where: { id: userId },
     });
 
-    if (!user) {
+    if (!user || user.deletedAt) {
       return sendError("User not found", "NOT_FOUND", 404);
     }
 
@@ -122,9 +125,56 @@ export async function DELETE(request: Request) {
       return sendError("Wrong Password", "VALIDATION_ERROR", 400);
     }
 
-    await prisma.user.delete({
-      where: { id: userId }
+    await prisma.$transaction(async (tx) => {
+  // 1️⃣ Find projects where user is ADMIN
+  const adminProjects = await tx.projectUser.findMany({
+    where: {
+      userId,
+      role: "ADMIN",
+    },
+  });
+
+  for (const membership of adminProjects) {
+    // 2️⃣ Find active teammates
+    const teammates = await tx.projectUser.findMany({
+      where: {
+        projectId: membership.projectId,
+        NOT: { userId },
+        user: {
+          deletedAt: null,
+        },
+      },
     });
+
+    if (teammates.length === 0) {
+      throw new Error(
+        "Cannot delete user. They are the sole admin of a project."
+      );
+    }
+
+    // 3️⃣ Promote random teammate
+    const random =
+      teammates[Math.floor(Math.random() * teammates.length)];
+
+    await tx.projectUser.update({
+      where: { id: random.id },
+      data: { role: "ADMIN" },
+    });
+
+    // 4️⃣ Downgrade deleting user to MEMBER
+    await tx.projectUser.update({
+      where: { id: membership.id },
+      data: { role: "MEMBER" },
+    });
+  }
+
+  // 5️⃣ Soft delete user
+  await tx.user.update({
+    where: { id: userId },
+    data: { deletedAt: new Date() },
+  });
+});
+
 
     const { password: _, ...safeUser } = user;
 

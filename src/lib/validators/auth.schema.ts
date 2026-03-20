@@ -10,5 +10,5 @@ export const signupSchema = z.object({
   userName: z.string().min(4, "UserName must be at least 4 characters"),
   email: z.string().email(),
   password: z.string().min(6).regex(/[!@#$%^&*(),.?":{}|<>]/, "Password must contain at least one special character").regex(/\d/, "Password must contain at least one number"),
-  age: z.number().min(0),
+  age: z.number().min(0).optional(),
 });

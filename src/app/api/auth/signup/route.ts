@@ -60,7 +60,13 @@ export async function POST(request: Request) {
           age,
           userName,
         },
-        include: { projectUsers: true },
+        include: { 
+          projectUsers: {
+            include : {
+              project : true,
+            }
+          }
+        },
       });
     }
 

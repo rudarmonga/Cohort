@@ -4,15 +4,42 @@ import { updateUserSchema } from "@/lib/validators/user.schema";
 import { handleError } from "@/lib/errorHandler";
 import { AppError } from "@/lib/AppError";
 import { comparePassword } from "@/lib/hash";
+import { Prisma } from "@prisma/client";
 
-export async function GET( request: Request ) {
+function handlePrismaError(error: any) {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    if (error.code === "P2002") {
+      
+      const field = Array.isArray(error.meta?.target)
+        ? error.meta.target[0]
+        : undefined;
+
+      const fieldMessages: Record<string, string> = {
+        userName: "Username already taken",
+        email: "Email already in use",
+      };
+
+      return sendError(
+        fieldMessages[field || ""] || `${field || "Username"} already exists`,
+        "UNIQUE_CONSTRAINT",
+        400
+      );
+    }
+  }
+
+  return null;
+}
+
+export async function GET(request: Request) {
   try {
     const userIdHeader = request.headers.get("x-user-id");
+
     if (!userIdHeader) {
       return sendError("Authentication required", "AUTH_ERROR", 401);
     }
 
     const userId = Number(userIdHeader);
+
     if (!Number.isInteger(userId)) {
       return sendError("Invalid user id", "VALIDATION_ERROR", 400);
     }
@@ -20,7 +47,11 @@ export async function GET( request: Request ) {
     const user = await prisma.user.findUnique({
       where: { id: userId },
       include: {
-        projectUsers: true,
+        projectUsers: {
+          include: {
+            project: true,
+          },
+        },
       },
     });
 
@@ -41,7 +72,7 @@ export async function GET( request: Request ) {
   }
 }
 
-export async function PUT( request: Request) {
+export async function PUT(request: Request) {
   try {
     const userIdHeader = request.headers.get("x-user-id");
     if (!userIdHeader) {
@@ -68,22 +99,20 @@ export async function PUT( request: Request) {
       where: { id: userId },
       data: parsedBody.data,
       include: {
-        projectUsers: true,
+        projectUsers: {
+          include: {
+            project: true,
+          },
+        },
       },
     });
 
-    if (!user) {
-      return sendError("User not found", "NOT_FOUND", 404);
-    }
+    const { password, ...safeUser } = user;
 
-    const {password, ...safeUser} = user;
-
-    return sendSuccess(
-      safeUser, 
-      "User updated successfully",
-      200,
-    );
+    return sendSuccess(safeUser, "User updated successfully", 200);
   } catch (error) {
+    const prismaHandled = handlePrismaError(error);
+    if (prismaHandled) return prismaHandled;
     return handleError(
       error instanceof Error ? error : new Error("Unknown error"),
       "PUT /api/user"
@@ -126,64 +155,53 @@ export async function DELETE(request: Request) {
     }
 
     await prisma.$transaction(async (tx) => {
-  // 1️⃣ Find projects where user is ADMIN
-  const adminProjects = await tx.projectUser.findMany({
-    where: {
-      userId,
-      role: "ADMIN",
-    },
-  });
-
-  for (const membership of adminProjects) {
-    // 2️⃣ Find active teammates
-    const teammates = await tx.projectUser.findMany({
-      where: {
-        projectId: membership.projectId,
-        NOT: { userId },
-        user: {
-          deletedAt: null,
+      const adminProjects = await tx.projectUser.findMany({
+        where: {
+          userId,
+          role: "ADMIN",
         },
-      },
+      });
+
+      for (const membership of adminProjects) {
+        const teammates = await tx.projectUser.findMany({
+          where: {
+            projectId: membership.projectId,
+            NOT: { userId },
+            user: { deletedAt: null },
+          },
+        });
+
+        if (teammates.length === 0) {
+          throw new AppError(
+            "Cannot delete user. They are the sole admin of a project.",
+            400,
+            "BUSINESS_LOGIC"
+          );
+        }
+
+        const random =
+          teammates[Math.floor(Math.random() * teammates.length)];
+
+        await tx.projectUser.update({
+          where: { id: random.id },
+          data: { role: "ADMIN" },
+        });
+
+        await tx.projectUser.update({
+          where: { id: membership.id },
+          data: { role: "MEMBER" },
+        });
+      }
+
+      await tx.user.update({
+        where: { id: userId },
+        data: { deletedAt: new Date() },
+      });
     });
-
-    if (teammates.length === 0) {
-      throw new Error(
-        "Cannot delete user. They are the sole admin of a project."
-      );
-    }
-
-    // 3️⃣ Promote random teammate
-    const random =
-      teammates[Math.floor(Math.random() * teammates.length)];
-
-    await tx.projectUser.update({
-      where: { id: random.id },
-      data: { role: "ADMIN" },
-    });
-
-    // 4️⃣ Downgrade deleting user to MEMBER
-    await tx.projectUser.update({
-      where: { id: membership.id },
-      data: { role: "MEMBER" },
-    });
-  }
-
-  // 5️⃣ Soft delete user
-  await tx.user.update({
-    where: { id: userId },
-    data: { deletedAt: new Date() },
-  });
-});
-
 
     const { password: _, ...safeUser } = user;
 
-    return sendSuccess(
-      safeUser,
-      "User deleted successfully",
-      200
-    );
-
+    return sendSuccess(safeUser, "User deleted successfully", 200);
   } catch (error) {
     return handleError(
       error instanceof Error ? error : new Error("Unknown error"),
